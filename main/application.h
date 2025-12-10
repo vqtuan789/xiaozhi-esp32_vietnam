@@ -18,6 +18,7 @@
 #include "esp32_sd_music.h"
 #include "esp32_music.h"
 #include "esp32_radio.h"
+#include "alarm_manager.h"
 
 #define MAIN_EVENT_SCHEDULE (1 << 0)
 #define MAIN_EVENT_SEND_AUDIO (1 << 1)
