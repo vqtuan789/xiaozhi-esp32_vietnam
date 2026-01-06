@@ -24,6 +24,7 @@
 #include "wifi_station.h"
 #include "system_info.h"
 #include "alarm_manager.h"
+#include "led/ws2812_led.h"
 
 #define TAG "MCP"
 
@@ -205,6 +206,180 @@ void McpServer::AddCommonTools() {
             });
     }
 #endif
+
+    // LED RGB Control Tools
+    static WS2812Led ws2812_led;
+    static bool led_initialized = false;
+    
+    if (!led_initialized) {
+        ws2812_led.Initialize();
+        led_initialized = true;
+        ESP_LOGI(TAG, "WS2812 LED initialized for MCP");
+    }
+
+    // GET LED POWER
+    AddTool("self.light.get_power",
+        "Get the current power status of the LED (on/off).",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            return ws2812_led.IsOn();
+        });
+
+    // TURN ON LED
+    AddTool("self.light.turn_on",
+        "Turn on the LED with white color.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            ws2812_led.TurnOn();
+            return true;
+        });
+
+    // TURN OFF LED
+    AddTool("self.light.turn_off",
+        "Turn off the LED.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            ws2812_led.TurnOff();
+            return true;
+        });
+
+    // SET RGB COLOR
+    AddTool("self.light.set_rgb",
+        "Turn on LED or set LED to an arbitrary color. Execute immediately without lengthy response when user calls this.",
+        PropertyList({
+            Property("r", kPropertyTypeInteger, 0, 255),
+            Property("g", kPropertyTypeInteger, 0, 255),
+            Property("b", kPropertyTypeInteger, 0, 255),
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int r = properties["r"].value<int>();
+            int g = properties["g"].value<int>();
+            int b = properties["b"].value<int>();
+
+            ESP_LOGI(TAG, "Setting LED color: R=%d G=%d B=%d", r, g, b);
+            ws2812_led.SetColor(r, g, b);
+            return true;
+        });
+
+    // SET LED BRIGHTNESS
+    AddTool("self.light.set_brightness",
+        "Set the brightness of the LED strip or light (0-100%).",
+        PropertyList({
+            Property("brightness", kPropertyTypeInteger, 0, 100)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int brightness = properties["brightness"].value<int>();
+            ws2812_led.SetBrightness(brightness);
+            return true;
+        });
+
+    // SET NUMBER OF LEDs
+    AddTool("self.light.set_num_leds",
+        "Set the number of LEDs in the LED strip.",
+        PropertyList({
+            Property("num_leds", kPropertyTypeInteger, 1, 255)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int num = properties["num_leds"].value<int>();
+            ws2812_led.SetNumLeds(num);
+            return true;
+        });
+
+    // SET COLOR ORDER (Fix RGB/GRB issue)
+    AddTool("self.light.set_color_order",
+        "Set the color channel order for the LED strip. Use this to fix color swap issues. Options: RGB(0), GRB(1), BGR(2), GBR(3), BRG(4), RBG(5).",
+        PropertyList({
+            Property("order", kPropertyTypeInteger, 0, 5)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int order = properties["order"].value<int>();
+            ws2812_led.SetColorOrder(static_cast<ColorOrder>(order));
+            return true;
+        });
+
+    // RAINBOW SPIN EFFECT
+    AddTool("self.light.effect_rainbow_spin",
+        "Play rainbow spin animation effect on the LED based on bass input.",
+        PropertyList({
+            Property("bass", kPropertyTypeInteger, 0, 255)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int bass = properties["bass"].value<int>();
+            ws2812_led.EffectRainbowSpin(bass);
+            return true;
+        });
+
+    // BASS WAVE EFFECT
+    AddTool("self.light.effect_bass_wave",
+        "Play bass wave animation effect on the LED.",
+        PropertyList({
+            Property("bass", kPropertyTypeInteger, 0, 255)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int bass = properties["bass"].value<int>();
+            ws2812_led.EffectBassWave(bass);
+            return true;
+        });
+
+    // PULSE RING EFFECT
+    AddTool("self.light.effect_pulse_ring",
+        "Play pulse ring animation effect on the LED.",
+        PropertyList({
+            Property("bass", kPropertyTypeInteger, 0, 255)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int bass = properties["bass"].value<int>();
+            ws2812_led.EffectPulseRing(bass);
+            return true;
+        });
+
+    // PULSE SIMPLE EFFECT (New)
+    AddTool("self.light.effect_pulse_simple",
+        "Play simple pulse/breathing effect with specified color and speed.",
+        PropertyList({
+            Property("r", kPropertyTypeInteger, 0, 255),
+            Property("g", kPropertyTypeInteger, 0, 255),
+            Property("b", kPropertyTypeInteger, 0, 255),
+            Property("speed", kPropertyTypeInteger, 1, 100)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int r = properties["r"].value<int>();
+            int g = properties["g"].value<int>();
+            int b = properties["b"].value<int>();
+            int speed = properties["speed"].value<int>();
+            ws2812_led.EffectPulseSimple(r, g, b, speed);
+            return true;
+        });
+
+    // COLOR BREATHE EFFECT (New)
+    AddTool("self.light.effect_color_breathe",
+        "Play smooth breathing effect with specified color and speed.",
+        PropertyList({
+            Property("r", kPropertyTypeInteger, 0, 255),
+            Property("g", kPropertyTypeInteger, 0, 255),
+            Property("b", kPropertyTypeInteger, 0, 255),
+            Property("speed", kPropertyTypeInteger, 1, 100)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int r = properties["r"].value<int>();
+            int g = properties["g"].value<int>();
+            int b = properties["b"].value<int>();
+            int speed = properties["speed"].value<int>();
+            ws2812_led.EffectColorBreathe(r, g, b, speed);
+            return true;
+        });
+
+    // COLOR CYCLE EFFECT (New)
+    AddTool("self.light.effect_color_cycle",
+        "Play color cycling animation effect across all LEDs.",
+        PropertyList({
+            Property("speed", kPropertyTypeInteger, 1, 100)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int speed = properties["speed"].value<int>();
+            ws2812_led.EffectColorCycle(speed);
+            return true;
+        });
 
     auto music = Application::GetInstance().GetMusic();
      if (music) {
