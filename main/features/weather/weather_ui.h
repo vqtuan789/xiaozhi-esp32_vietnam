@@ -46,6 +46,10 @@ private:
     // Bottom Info
     lv_obj_t* label_brand_;       
     lv_obj_t* label_humidity_;
+    
+    // Battery display (icon + percent)
+    lv_obj_t* label_battery_icon_;
+    lv_obj_t* label_battery_text_;
 
     int screen_width_;
     int screen_height_;

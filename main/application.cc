@@ -1161,6 +1161,24 @@ void Application::UpdateIdleDisplay() {
         card.icon = FONT_AWESOME_WIFI;
     }
 
+    // Read battery level from board and set into IdleCardInfo
+    int battery_level = 100;
+    bool charging = false, discharging = false;
+    Board& board = Board::GetInstance();
+    if (board.GetBatteryLevel(battery_level, charging, discharging)) {
+        char battery_buf[16];
+        if (charging) {
+            snprintf(battery_buf, sizeof(battery_buf), "⚡ %d%%", battery_level);
+        } else {
+            snprintf(battery_buf, sizeof(battery_buf), "%d%%", battery_level);
+        }
+        card.battery_text = battery_buf;
+        card.battery_level = battery_level;
+    } else {
+        card.battery_text = "--%";
+        card.battery_level = 100;
+    }
+
     auto display = Board::GetInstance().GetDisplay();
     display->ShowIdleCard(card);
 }

@@ -29,6 +29,7 @@ struct IdleCardInfo {
     std::string feels_like_text;
     std::string wind_text;
     std::string pressure_text;
+    std::string battery_text;    // [NEW] Thêm text pin
     const char* icon = nullptr;
     int battery_level = 100; // [NEW] Thêm biến pin
 };
