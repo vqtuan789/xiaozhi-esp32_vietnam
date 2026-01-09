@@ -107,20 +107,20 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     lv_obj_set_style_text_font(label_date_, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(label_date_, COLOR_NEON_GREEN, 0);
     lv_label_set_text(label_date_, "--/--/----");
-    lv_obj_align(label_date_, LV_ALIGN_TOP_MID, 0, 25);
+    lv_obj_align(label_date_, LV_ALIGN_TOP_MID, 0, 30);
 
     // --- PIN / BATTERY (icon + percent) ---
     label_battery_icon_ = lv_label_create(container_);
     lv_obj_set_style_text_font(label_battery_icon_, &font_awesome_30_4, 0);
     lv_obj_set_style_text_color(label_battery_icon_, COLOR_AQUA, 0);
     lv_label_set_text(label_battery_icon_, FONT_AWESOME_BATTERY_FULL);
-    lv_obj_align(label_battery_icon_, LV_ALIGN_CENTER, 65, -60);
+    lv_obj_align(label_battery_icon_, LV_ALIGN_CENTER, 50, -45);
 
     label_battery_text_ = lv_label_create(container_);
     lv_obj_set_style_text_font(label_battery_text_, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(label_battery_text_, COLOR_AQUA, 0);
     lv_label_set_text(label_battery_text_, "100%");
-    lv_obj_align(label_battery_text_, LV_ALIGN_CENTER, 65, -35);
+    lv_obj_align(label_battery_text_, LV_ALIGN_CENTER, 50, -20);
 
     // --- HÀNG 2: ĐỒNG HỒ KỸ THUẬT SỐ (Màu Cam) ---
     label_time_ = lv_label_create(container_);
@@ -136,21 +136,21 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     lv_obj_set_style_text_font(icon_weather_main_, &font_awesome_30_4, 0);
     lv_obj_set_style_text_color(icon_weather_main_, COLOR_YELLOW, 0);
     lv_label_set_text(icon_weather_main_, FONT_AWESOME_EARTH_ASIA);
-    lv_obj_align(icon_weather_main_, LV_ALIGN_CENTER, -65, -60); //-55 , -10
+    lv_obj_align(icon_weather_main_, LV_ALIGN_CENTER, -50, -45); //-55 , -10
 
     // Nhiệt độ (Bên phải)
     label_temp_ = lv_label_create(container_);
     lv_obj_set_style_text_font(label_temp_, &lv_font_montserrat_20, 0); 
     lv_obj_set_style_text_color(label_temp_, COLOR_YELLOW, 0);
     lv_label_set_text(label_temp_, "--°C");
-    lv_obj_align(label_temp_, LV_ALIGN_CENTER, -65, -35);    //55, -10
+    lv_obj_align(label_temp_, LV_ALIGN_CENTER, -50, -20);    //55, -10
 
     // --- HÀNG 4: THÀNH PHỐ (Màu Trắng) --- LV_ALIGN_BOTTOM_MID
     label_city_ = lv_label_create(container_);
     lv_obj_set_style_text_font(label_city_, &font_puhui_14_1, 0);
     lv_obj_set_style_text_color(label_city_, COLOR_WHITE, 0);
     lv_label_set_text(label_city_, "Loading...");
-    lv_obj_align(label_city_, LV_ALIGN_CENTER, 0, 60); //25
+    lv_obj_align(label_city_, LV_ALIGN_CENTER, 0, 65); //25
     // --- HÀNG 5: THÔNG TIN CHI TIẾT (Scroll) ---
 
     label_humidity_ = lv_label_create(container_);
@@ -159,12 +159,12 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
 
     
     // Giới hạn chiều rộng để chữ chạy
-    lv_obj_set_width(label_humidity_, 200); 
+    lv_obj_set_width(label_humidity_, 150); 
     lv_label_set_long_mode(label_humidity_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(label_humidity_, LV_TEXT_ALIGN_CENTER, 0);
     
     lv_label_set_text(label_humidity_, "...");
-    lv_obj_align(label_humidity_, LV_ALIGN_CENTER, 0, 80);//50
+    lv_obj_align(label_humidity_, LV_ALIGN_CENTER, 0, 50);//50
 
     // --- BRAND: "Xiaozhi AI-IoT 🇻🇳" (Màu xám) ---
     label_brand_ = lv_label_create(container_);
