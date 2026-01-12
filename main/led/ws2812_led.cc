@@ -1,11 +1,24 @@
 #include <esp_log.h>
 #include <math.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "ws2812_led.h"
 #include "settings.h"
 #include "led_strip.h"
 
 #define LED_GPIO GPIO_NUM_14  // TX0
 #define TAG "WS2812_LED"
+
+// Effect types enum
+enum LedEffectType {
+    EFFECT_NONE = -1,
+    EFFECT_RAINBOW_SPIN = 0,
+    EFFECT_BASS_WAVE = 1,
+    EFFECT_PULSE_RING = 2,
+    EFFECT_PULSE_SIMPLE = 3,
+    EFFECT_COLOR_BREATHE = 4,
+    EFFECT_COLOR_CYCLE = 5
+};
 
 static const led_strip_rmt_config_t bsp_rmt_config = {
     .clk_src = RMT_CLK_SRC_DEFAULT,
@@ -20,6 +33,9 @@ WS2812Led::WS2812Led() {
 }
 
 WS2812Led::~WS2812Led() {
+    // Stop the effect task first
+    StopEffectTask();
+    
     if (led_strip_ != nullptr) {
         led_strip_del((led_strip_handle_t)led_strip_);
         led_strip_ = nullptr;
@@ -58,6 +74,11 @@ void WS2812Led::Initialize() {
 
 esp_err_t WS2812Led::SetColor(uint8_t r, uint8_t g, uint8_t b) {
     esp_err_t ret = ESP_OK;
+
+    // Stop any running effect when setting static color
+    if (current_effect_type_ != EFFECT_NONE) {
+        StopEffectTask();
+    }
 
     // Scale brightness
     uint8_t R = (r * brightness_scale_) >> 8;
@@ -161,7 +182,11 @@ void WS2812Led::SetNumLeds(uint8_t num) {
 
 void WS2812Led::TurnOn() {
     led_on_ = true;
-    SetColor(r_, g_, b_);
+    
+    // If current color is black (0,0,0), default to white when turning on
+    if (r_ == 0 && g_ == 0 && b_ == 0) {
+        SetColor(255, 255, 255);  // Default to white on first turn on
+    }
 }
 
 void WS2812Led::TurnOff() {
@@ -177,12 +202,11 @@ void WS2812Led::OnStateChanged() {
 
 // hiệu ứng quay vòng cầu vồng
 void WS2812Led::EffectRainbowSpin(int bass) {
-    static float offset = 0.0f;
-    offset += (bass / 255.0f) * 0.1f;  // Increased speed
-    if (offset > 1.0f) offset -= 1.0f;
+    effect_offset_ += (bass / 255.0f) * 0.1f;  // Increased speed
+    if (effect_offset_ > 1.0f) effect_offset_ -= 1.0f;
 
     for (int i = 0; i < numled_; i++) {
-        float hue = fmodf((float)i / numled_ + offset, 1.0f);
+        float hue = fmodf((float)i / numled_ + effect_offset_, 1.0f);
 
         // Better color distribution
         uint8_t r = 0, g = 0, b = 0;
@@ -214,13 +238,12 @@ void WS2812Led::EffectRainbowSpin(int bass) {
 
 // hiệu ứng sóng bass
 void WS2812Led::EffectBassWave(int bass) {
-    static float phase = 0;
-    phase += 0.05f;  // Slower, smoother
-    if (phase > 6.28f) phase -= 6.28f;
+    effect_phase_ += 0.05f;  // Slower, smoother
+    if (effect_phase_ > 6.28f) effect_phase_ -= 6.28f;
 
     for (int i = 0; i < numled_; i++) {
         // Create wave effect
-        float wave = sinf((i * 0.3f) + phase) * 0.5f + 0.5f;
+        float wave = sinf((i * 0.3f) + effect_phase_) * 0.5f + 0.5f;
         
         uint8_t r = (uint8_t)(wave * bass * 0.8f);
         uint8_t g = (uint8_t)(wave * bass * 0.3f);
@@ -233,16 +256,14 @@ void WS2812Led::EffectBassWave(int bass) {
 
 // hiệu ứng vòng nhấp nháy
 void WS2812Led::EffectPulseRing(int bass) {
-    static float pulse = 0.0f;
-
     float speed = bass / 255.0f * 0.1f;
-    pulse += speed;
-    if (pulse > 1.0f)
-        pulse = 0.0f;
+    effect_pulse_ += speed;
+    if (effect_pulse_ > 1.0f)
+        effect_pulse_ = 0.0f;
 
     for (int i = 0; i < numled_; i++) {
         float pos = (float)i / numled_;
-        float distance = fabsf(pos - pulse);
+        float distance = fabsf(pos - effect_pulse_);
         if (distance > 0.5f) distance = 1.0f - distance;
         
         float intensity = 1.0f - (distance * 2.0f);
@@ -260,12 +281,11 @@ void WS2812Led::EffectPulseRing(int bass) {
 
 // chế độ nhấp nháy đơn giản
 void WS2812Led::EffectPulseSimple(uint8_t r, uint8_t g, uint8_t b, int speed) {
-    static float pulse = 0.0f;
-    pulse += (speed / 100.0f) * 0.02f;
-    if (pulse > 1.0f) pulse -= 1.0f;
+    effect_pulse_ += (speed / 100.0f) * 0.02f;
+    if (effect_pulse_ > 1.0f) effect_pulse_ -= 1.0f;
 
     // Create brightness pulse effect
-    float brightness = (sinf(pulse * 6.28f) + 1.0f) / 2.0f;  // 0 to 1
+    float brightness = (sinf(effect_pulse_ * 6.28f) + 1.0f) / 2.0f;  // 0 to 1
     
     uint8_t pulsed_r = (uint8_t)(r * brightness);
     uint8_t pulsed_g = (uint8_t)(g * brightness);
@@ -279,12 +299,11 @@ void WS2812Led::EffectPulseSimple(uint8_t r, uint8_t g, uint8_t b, int speed) {
 
 // chế độ đảo màu liên tục
 void WS2812Led::EffectColorBreathe(uint8_t r, uint8_t g, uint8_t b, int speed) {
-    static float breathe = 0.0f;
-    breathe += (speed / 100.0f) * 0.01f;
-    if (breathe > 1.0f) breathe -= 1.0f;
+    effect_breathe_ += (speed / 100.0f) * 0.01f;
+    if (effect_breathe_ > 1.0f) effect_breathe_ -= 1.0f;
 
     // Smooth breathing curve
-    float intensity = (sinf(breathe * 6.28f) + 1.0f) / 2.0f;
+    float intensity = (sinf(effect_breathe_ * 6.28f) + 1.0f) / 2.0f;
     intensity = intensity * intensity;  // Smoother curve
 
     uint8_t br = (uint8_t)(r * intensity);
@@ -299,12 +318,11 @@ void WS2812Led::EffectColorBreathe(uint8_t r, uint8_t g, uint8_t b, int speed) {
 
 // chế đô chạy mầu liên tục
 void WS2812Led::EffectColorCycle(int speed) {
-    static float cycle = 0.0f;
-    cycle += (speed / 100.0f) * 0.01f;
-    if (cycle > 1.0f) cycle -= 1.0f;
+    effect_cycle_ += (speed / 100.0f) * 0.01f;
+    if (effect_cycle_ > 1.0f) effect_cycle_ -= 1.0f;
 
     for (int i = 0; i < numled_; i++) {
-        float hue = fmodf(cycle + (float)i / numled_, 1.0f);
+        float hue = fmodf(effect_cycle_ + (float)i / numled_, 1.0f);
         
         uint8_t r = 0, g = 0, b = 0;
         
@@ -332,4 +350,122 @@ void WS2812Led::EffectColorCycle(int speed) {
         SetPixelWithRemap(i, r, g, b);
     }
     led_strip_refresh((led_strip_handle_t)led_strip_);
+}
+
+// =====================================================
+// Task management for continuous LED effects
+// =====================================================
+
+void WS2812Led::StartEffectTask(int effect_type, int param1, uint8_t param_r, uint8_t param_g, uint8_t param_b) {
+    // Stop existing task if running
+    StopEffectTask();
+    
+    // Turn on LED before starting effect
+    TurnOn();
+    
+    // Reset animation states
+    effect_offset_ = 0.0f;
+    effect_phase_ = 0.0f;
+    effect_pulse_ = 0.0f;
+    effect_breathe_ = 0.0f;
+    effect_cycle_ = 0.0f;
+    
+    // Store effect parameters
+    current_effect_type_ = effect_type;
+    effect_param1_ = param1;
+    effect_param_r_ = param_r;
+    effect_param_g_ = param_g;
+    effect_param_b_ = param_b;
+    
+    // Start the effect task
+    led_effect_task_should_stop_ = false;
+    xTaskCreatePinnedToCore(
+        ledEffectTaskWrapper,
+        "led_effect",       // Task name
+        1024 * 4,           // Stack size (4KB - increased from 1KB to handle effect calculations)
+        this,               // Parameter
+        1,                  // Priority (same as display task)
+        &led_effect_task_handle_,
+        0                   // Run on core 0 (same as display)
+    );
+    
+    ESP_LOGI(TAG, "LED effect task started (effect_type=%d)", effect_type);
+}
+
+void WS2812Led::StopEffectTask() {
+    if (led_effect_task_handle_ != nullptr) {
+        ESP_LOGI(TAG, "Stopping LED effect task");
+        led_effect_task_should_stop_ = true;
+        
+        // Wait for the task to stop (wait up to 1 second)
+        int wait_count = 0;
+        while (led_effect_task_handle_ != nullptr && wait_count < 100) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            wait_count++;
+        }
+        
+        if (led_effect_task_handle_ != nullptr) {
+            ESP_LOGW(TAG, "LED effect task did not stop gracefully, force deleting");
+            vTaskDelete(led_effect_task_handle_);
+            led_effect_task_handle_ = nullptr;
+        } else {
+            ESP_LOGI(TAG, "LED effect task stopped successfully");
+        }
+    }
+    
+    current_effect_type_ = EFFECT_NONE;
+}
+
+void WS2812Led::ledEffectTaskWrapper(void* arg) {
+    auto self = static_cast<WS2812Led*>(arg);
+    self->ledEffectTask();
+}
+
+void WS2812Led::ledEffectTask() {
+    ESP_LOGI(TAG, "LED effect task running");
+    
+    // Main effect loop
+    while (!led_effect_task_should_stop_) {
+        if (!led_on_) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        
+        switch (current_effect_type_) {
+            case EFFECT_RAINBOW_SPIN:
+                EffectRainbowSpin(effect_param1_);
+                break;
+                
+            case EFFECT_BASS_WAVE:
+                EffectBassWave(effect_param1_);
+                break;
+                
+            case EFFECT_PULSE_RING:
+                EffectPulseRing(effect_param1_);
+                break;
+                
+            case EFFECT_PULSE_SIMPLE:
+                EffectPulseSimple(effect_param_r_, effect_param_g_, effect_param_b_, effect_param1_);
+                break;
+                
+            case EFFECT_COLOR_BREATHE:
+                EffectColorBreathe(effect_param_r_, effect_param_g_, effect_param_b_, effect_param1_);
+                break;
+                
+            case EFFECT_COLOR_CYCLE:
+                EffectColorCycle(effect_param1_);
+                break;
+                
+            default:
+                vTaskDelay(pdMS_TO_TICKS(50));
+                break;
+        }
+        
+        // Small delay to control animation frame rate (approximately 30 FPS)
+        vTaskDelay(pdMS_TO_TICKS(33));
+    }
+    
+    ESP_LOGI(TAG, "LED effect task stopping");
+    led_effect_task_handle_ = nullptr;
+    vTaskDelete(nullptr);
 }
