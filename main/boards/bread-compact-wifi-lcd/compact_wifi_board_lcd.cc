@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 #include "codecs/no_audio_codec.h"
 #include "display/lcd_display.h"
+#include "features/music/music_visualizer.h"
 #include "system_reset.h"
 #include "application.h"
 #include "button.h"
@@ -304,8 +305,10 @@ private:
             {
                                 power_save_timer_->WakeUp();
                 Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+                auto* viz = Application::GetInstance().GetMusicVisualizer();
+                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-                if (source == Display::DisplaySourceType::SD_CARD) {
+                if (source == music::SourceType::SD_CARD) {
                 ESP_LOGI(TAG, "Play Next track");
                 auto& app = Application::GetInstance();
                 auto sd_music = app.GetSdMusic();
@@ -333,9 +336,10 @@ private:
             case TOUCH_GESTURE_SWIPE_LEFT:
                             power_save_timer_->WakeUp();
             {
-                Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+                auto* viz = Application::GetInstance().GetMusicVisualizer();
+                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-                if (source == Display::DisplaySourceType::SD_CARD) {
+                if (source == music::SourceType::SD_CARD) {
                 ESP_LOGI(TAG, "Play Previous track");
                 auto& app = Application::GetInstance();
                 auto sd_music = app.GetSdMusic();
@@ -400,9 +404,10 @@ private:
             ESP_LOGW(TAG, "Long Press at (%d, %d)", x, y);
                             power_save_timer_->WakeUp();
             {
-                Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+                auto* viz = Application::GetInstance().GetMusicVisualizer();
+                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-                if (source == Display::DisplaySourceType::NONE) {
+                if (source == music::SourceType::NONE) {
                 auto& app = Application::GetInstance();
                 auto sd_music = app.GetSdMusic();
                 if (sd_music) {

@@ -31,14 +31,6 @@ private:
 
 class Display {
 public:
-    enum class DisplaySourceType {
-        NONE = 0,
-        SD_CARD,
-        ONLINE,
-        RADIO
-    };
-
-public:
     Display();
     virtual ~Display();
 
@@ -47,25 +39,22 @@ public:
     virtual void ShowNotification(const std::string &notification, int duration_ms = 3000);
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
-    virtual void SetMusicInfo(const char* song_name);
-    virtual DisplaySourceType DetectSourceFromInfo() { return DisplaySourceType::NONE; }
     virtual void SetTheme(Theme* theme);
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
 
-    // For FFT display
-    virtual void StartFFT() {}
-    virtual void StopFFT() {}
-    virtual void FeedAudioDataFFT(int16_t* data, size_t sample_count) {};
-    virtual int16_t* MakeAudioBuffFFT(size_t sample_count) { return nullptr; };
-    virtual void ReleaseAudioBuffFFT(int16_t* buffer = nullptr) {};
-
-    // For QR code display
-    virtual void ClearQRCode() {}
-    virtual bool QRCodeIsSupported() { return false; }
-    virtual void DisplayQRCode(const uint8_t* qrcode, const char* text = nullptr) {}
-    virtual void SetIpAddress(const std::string& ip_address) {}
+    /**
+     * @brief Show or hide the media overlay on the main UI.
+     *
+     * When active, hides the main emotion/chat UI (emoji, chat message,
+     * idle card) to make room for media content (FFT spectrum, video
+     * canvas, etc.).  When deactivated, the original UI is restored.
+     *
+     * @param active  true = media overlay is active (hide main UI),
+     *                false = restore main UI
+     */
+    virtual void SetMediaOverlayActive(bool active) {}
 
     // For rotation display
     virtual bool SetRotation(int rotation_degree, bool save_setting) { return false; }
