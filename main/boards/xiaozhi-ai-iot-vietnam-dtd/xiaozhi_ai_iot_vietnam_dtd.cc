@@ -278,16 +278,15 @@ private:
         switch (gesture) {
             case TOUCH_GESTURE_SWIPE_RIGHT:
             {
-                auto* viz = Application::GetInstance().GetMusicVisualizer();
-                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
+                music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::SD_CARD) {
                 ESP_LOGI(TAG, "Play Next track");
                 auto& app = Application::GetInstance();
                 auto sd_music = app.GetSdMusic();
                 if (sd_music) {
-                    sd_music->stop();
-                    sd_music->next();
+                    sd_music->Stop();
+                    sd_music->Next();
                     vTaskDelay(pdMS_TO_TICKS(500));
                 }
                 } else {
@@ -308,16 +307,15 @@ private:
             break;
             case TOUCH_GESTURE_SWIPE_LEFT:
             {
-                auto* viz = Application::GetInstance().GetMusicVisualizer();
-                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
+                music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::SD_CARD) {
                 ESP_LOGI(TAG, "Play Previous track");
                 auto& app = Application::GetInstance();
                 auto sd_music = app.GetSdMusic();
                 if (sd_music) {
-                    sd_music->stop();
-                    sd_music->prev();
+                    sd_music->Stop();
+                    sd_music->Prev();
                     vTaskDelay(pdMS_TO_TICKS(500));
                 }
                 break;
@@ -372,15 +370,14 @@ private:
             case TOUCH_GESTURE_LONG_PRESS:
             ESP_LOGW(TAG, "Long Press at (%d, %d)", x, y);
             {
-                auto* viz = Application::GetInstance().GetMusicVisualizer();
-                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
+                music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::NONE) {
                 auto& app = Application::GetInstance();
                 auto sd_music = app.GetSdMusic();
                 if (sd_music) {
                     ESP_LOGI(TAG, "Toggle Play/Pause");
-                    sd_music->play();
+                    sd_music->Play();
                 }
                 } else {
                 GetAudioCodec()->SetOutputVolume(0);

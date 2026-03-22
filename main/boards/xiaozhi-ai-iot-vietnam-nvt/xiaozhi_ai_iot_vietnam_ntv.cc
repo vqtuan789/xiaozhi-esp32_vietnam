@@ -10,7 +10,6 @@
 #include "lamp_controller.h"
 #include "led/single_led.h"
 #include "assets/lang_config.h"
-#include "power_save_timer.h"
 
 #include <wifi_station.h>
 #include <esp_log.h>
@@ -19,8 +18,6 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <driver/spi_common.h>
-#include <esp_sleep.h>
-#include <driver/rtc_io.h>
 
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
 #include <esp_lcd_touch.h>
@@ -77,14 +74,15 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
 };
 #endif
  
-#define TAG "CompactWifiBoardLCD"
+#define TAG "XiaozhiAIIoTVietNamDTD"
 
-class CompactWifiBoardLCD : public WifiBoard {
+class XiaozhiAIIoTVietNamDTD : public WifiBoard {
 private:
+ 
     Button boot_button_;
+    Button volume_up_button_;
+    Button volume_down_button_;
     LcdDisplay* display_;
-    PowerSaveTimer* power_save_timer_;
-    esp_lcd_panel_handle_t panel_ = nullptr;
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
     LcdTouch *touch_;
     // Touch interrupt semaphore
@@ -113,32 +111,9 @@ private:
 #endif
     }
 
-    void InitializePowerSaveTimer() {
-        power_save_timer_ = new PowerSaveTimer(-1, SECONDS_TO_SLEEP_MODE, SECONDS_TO_SHUTDOWN);
-        power_save_timer_->OnEnterSleepMode([this]() {
-            GetDisplay()->SetPowerSaveMode(true);
-            if (GetBacklight()) {
-                GetBacklight()->SetBrightness(1);
-            }
-        });
-        power_save_timer_->OnExitSleepMode([this]() {
-            GetDisplay()->SetPowerSaveMode(false);
-            if (GetBacklight()) {
-                GetBacklight()->RestoreBrightness();
-            }
-        });
-        power_save_timer_->OnShutdownRequest([this]() {
-            ESP_LOGI(TAG, "Shutting down");
-            if (panel_ != nullptr) {
-                esp_lcd_panel_disp_on_off(panel_, false);
-            }
-            esp_deep_sleep_start();
-        });
-        power_save_timer_->SetEnabled(true);
-    }
-
     void InitializeLcdDisplay() {
         esp_lcd_panel_io_handle_t panel_io = nullptr;
+        esp_lcd_panel_handle_t panel = nullptr;
         // LCD screen control IO initialization
         ESP_LOGD(TAG, "Install panel IO");
         esp_lcd_panel_io_spi_config_t io_config = {};
@@ -170,19 +145,19 @@ private:
             .init_cmds_size = sizeof(gc9107_lcd_init_cmds) / sizeof(gc9a01_lcd_init_cmd_t),
         };        
 #else
-        ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel_));
+        ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
 #endif
         
-        esp_lcd_panel_reset(panel_);
+        esp_lcd_panel_reset(panel);
 
-        esp_lcd_panel_init(panel_);
-        esp_lcd_panel_invert_color(panel_, DISPLAY_INVERT_COLOR);
-        esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY);
-        esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        esp_lcd_panel_init(panel);
+        esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
+        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
+        esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
 #ifdef  LCD_TYPE_GC9A01_SERIAL
         panel_config.vendor_config = &gc9107_vendor_config;
 #endif
-        display_ = new SpiLcdDisplay(panel_io, panel_,
+        display_ = new SpiLcdDisplay(panel_io, panel,
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
@@ -191,7 +166,7 @@ private:
         if (tp->config.user_data == NULL) {
             return;
         }
-        CompactWifiBoardLCD *board = static_cast<CompactWifiBoardLCD *>(tp->config.user_data);
+        XiaozhiAIIoTVietNamDTD *board = static_cast<XiaozhiAIIoTVietNamDTD *>(tp->config.user_data);
         board->NotifyTouchEvent();
     }
 
@@ -293,7 +268,7 @@ private:
         
         touch_->SetRatioXY(2.0f);
         touch_->SetSwipeThreshold(60); // pixels
-        
+                            
         touch_->SetInterruptCallback([this]()->bool {
             return this->WaitForTouchEvent();
         });
@@ -331,7 +306,6 @@ private:
             }
             break;
             case TOUCH_GESTURE_SWIPE_LEFT:
-                            power_save_timer_->WakeUp();
             {
                 music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
@@ -361,7 +335,6 @@ private:
             }
             break;
             case TOUCH_GESTURE_SWIPE_DOWN:
-                            power_save_timer_->WakeUp();
             {
                 auto codec = GetAudioCodec();
                 auto volume = codec->output_volume() - 5;
@@ -373,7 +346,6 @@ private:
             }
             break;
             case TOUCH_GESTURE_SWIPE_UP:
-                            power_save_timer_->WakeUp();
             {
                 auto codec = GetAudioCodec();
                 auto volume = codec->output_volume() + 5;
@@ -387,7 +359,6 @@ private:
             case TOUCH_GESTURE_TAP:
             break;
             case TOUCH_GESTURE_DOUBLE_TAP:
-                            power_save_timer_->WakeUp();
             {
                 auto& app = Application::GetInstance();
                 if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
@@ -398,20 +369,20 @@ private:
             break;
             case TOUCH_GESTURE_LONG_PRESS:
             ESP_LOGW(TAG, "Long Press at (%d, %d)", x, y);
-                            power_save_timer_->WakeUp();
             {
                 music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::NONE) {
-                auto& app = Application::GetInstance();
-                auto sd_music = app.GetSdMusic();
-                if (sd_music) {
-                    ESP_LOGI(TAG, "Toggle Play/Pause");
-                    sd_music->Play();
+                    auto &app = Application::GetInstance();
+                    auto sd_music = app.GetSdMusic();
+                    if (sd_music) {
+                        ESP_LOGI(TAG, "Toggle Play/Pause");
+                        sd_music->Play();
+                    }
                 }
-                } else {
-                GetAudioCodec()->SetOutputVolume(0);
-                GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+                else {
+                    GetAudioCodec()->SetOutputVolume(0);
+                    GetDisplay()->ShowNotification(Lang::Strings::MUTED);
                 }
             }
             break;
@@ -428,26 +399,56 @@ private:
         }, 5);
 
         boot_button_.OnClick([this]() {
-            power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
                 ResetWifiConfiguration();
             }
             app.ToggleChatState();
         });
+
+        volume_up_button_.OnClick([this]() {
+            auto codec = GetAudioCodec();
+            auto volume = codec->output_volume() + 10;
+            if (volume > 100) {
+                volume = 100;
+            }
+            codec->SetOutputVolume(volume);
+            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+        });
+
+        volume_up_button_.OnLongPress([this]() {
+            GetAudioCodec()->SetOutputVolume(100);
+            GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
+        });
+
+        volume_down_button_.OnClick([this]() {
+            auto codec = GetAudioCodec();
+            auto volume = codec->output_volume() - 10;
+            if (volume < 0) {
+                volume = 0;
+            }
+            codec->SetOutputVolume(volume);
+            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+        });
+
+        volume_down_button_.OnLongPress([this]() {
+            GetAudioCodec()->SetOutputVolume(0);
+            GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+        });
     }
 
-    // IoT initialization, adding support for AI visible devices
+    // Initialize IoT tools, adding support for AI visible devices
     void InitializeTools() {
         static LampController lamp(LAMP_GPIO);
     }
 
 public:
-    CompactWifiBoardLCD() :
-        boot_button_(BOOT_BUTTON_GPIO) {
+    XiaozhiAIIoTVietNamDTD() :
+        boot_button_(BOOT_BUTTON_GPIO),
+        volume_up_button_(VOLUME_UP_BUTTON_GPIO),
+        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
         InitializeSpi();
         InitializeLcdDisplay();
-        InitializePowerSaveTimer();
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
         InitializeTouch();
 #endif
@@ -456,7 +457,6 @@ public:
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
-        
     }
 
     virtual Led* GetLed() override {
@@ -478,6 +478,10 @@ public:
     virtual Display* GetDisplay() override {
         return display_;
     }
+
+#ifdef CONFIG_TOUCH_PANEL_ENABLE
+    virtual LcdTouch *GetTouch() override { return touch_; }
+#endif
 
     virtual Backlight* GetBacklight() override {
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
@@ -515,4 +519,4 @@ public:
 #endif
 };
 
-DECLARE_BOARD(CompactWifiBoardLCD);
+DECLARE_BOARD(XiaozhiAIIoTVietNamDTD);
