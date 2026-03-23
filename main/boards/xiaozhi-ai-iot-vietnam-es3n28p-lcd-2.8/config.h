@@ -58,7 +58,7 @@
 #define BUILTIN_LED_GPIO        GPIO_NUM_42
 #define CHARGING_DETECTION_GPIO GPIO_NUM_NC
 
-#define SECONDS_TO_SLEEP_MODE   (60U * 5U)  // 5 minutes
+#define SECONDS_TO_SLEEP_MODE   (60U * 30U)  // 30 minutes
 #define SECONDS_TO_SHUTDOWN     (60U * 60U * 2U) // 2 hours
 
 // Screen display section
@@ -70,11 +70,11 @@
 #define DISPLAY_CS_PIN        GPIO_NUM_10
 #define DISPLAY_MOSI_PIN      GPIO_NUM_11
 #define DISPLAY_MIS0_PIN      GPIO_NUM_13
-#define DISPLAY_SPI_SCLK_HZ   (20 * 1000 * 1000)
+#define DISPLAY_SPI_SCLK_HZ   (80 * 1000 * 1000)
 
 #define LCD_SPI_HOST          SPI3_HOST
 
-#define LCD_ROTATION_DEGREE   0  // Set to 0, 90, 180, or 270
+#define LCD_ROTATION_DEGREE   270  // Set to 0, 90, 180, or 270
 #if LCD_ROTATION_DEGREE == 0
 #define LCD_TYPE_ILI9341_SERIAL
 #define DISPLAY_WIDTH         240

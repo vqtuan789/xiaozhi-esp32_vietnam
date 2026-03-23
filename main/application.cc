@@ -13,7 +13,16 @@
 #include "wifi_station.h"
 #include "sd_card.h"
 #include "esp32_sd_music.h"
-#include <qrcode.h>
+#include "features/mcp_server_features.h"
+#include "features/music/audio_stream_player.h"
+#include "lcd_display.h"
+#include "oled_display.h"
+#include "lvgl_theme.h"
+#include "features/music/music_visualizer.h"
+#include "features/spectrum/spectrum_manager.h"
+#include "features/video/video_player.h"
+#include "features/QRCode/qrcode_display.h"
+#include <esp_lvgl_port.h>
 #include <cmath>
 #include <cstring>
 #include <esp_log.h>
@@ -287,10 +296,12 @@ void Application::ToggleChatState() {
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
             AbortSpeaking(kAbortReasonNone);
+            ESP_LOGI(TAG, "Stopped speaking by user");
         });
     } else if (device_state_ == kDeviceStateListening) {
         Schedule([this]() {
             protocol_->CloseAudioChannel();
+            ESP_LOGI(TAG, "Stopped listening by user");
         });
     }
 }
@@ -365,30 +376,20 @@ void Application::Start() {
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
 #if (0) // Test QR code display
-    // Capture display pointer for callback
-    static Display* s_display = display;
-    esp_qrcode_config_t qrcode_cfg = {
-        .display_func = [](esp_qrcode_handle_t qrcode) {
-            if (s_display && qrcode) {
-                s_display->DisplayQRCode(qrcode, nullptr);
-            }
-        },
-        .max_qrcode_version = 10,
-        .qrcode_ecc_level = ESP_QRCODE_ECC_MED
-    };
-    
-    // Create URL format for QR code
-    std::string qr_text = "1234567890";
-    esp_err_t err = esp_qrcode_generate(&qrcode_cfg, qr_text.c_str());
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to generate test QR code");
-    }
+    qrcode::QRCodeDisplay::GetInstance().Show("http://192.168.1.100/ota", "192.168.1.100/ota");
     return;
 #endif
 
     /* Setup the audio service */
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
+#ifdef CONFIG_MIC_HIGH_PASS_FILTER_ENABLE
+    // Enable high pass filter to reduce low frequency noise
+    {
+        float gain = CONFIG_MIC_HIGH_PASS_FILTER_GAIN / 100.0f;
+        audio_service_.SetHighPassFilter(new HighPassFilter(gain));
+    }
+#endif
     audio_service_.Start();
     // codec->SetOutputVolume(10);
 
@@ -411,7 +412,7 @@ void Application::Start() {
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 1024 * 3 + 512, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 1024 * 5, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -419,25 +420,24 @@ void Application::Start() {
     /* Wait for the network to be ready */
     board.StartNetwork();
 
-    music_ = new Esp32Music();
-    if (music_ != nullptr) {
-        music_->Initialize();
-        // music_->Download("Con Mua Bang Gia", "Bang Kieu");
-    }
+    // Register network tool — pass overlay callback so the QR canvas can
+    // hide/restore the host display's normal UI while it is visible.
+    // SetMediaOverlayActive is virtual: works for both LCD and OLED.
+    McpFeatureTools::RegisterIp2QrCodeTool([display](bool active) {
+        display->SetMediaOverlayActive(active);
+    });
 
-    radio_ = new Esp32Radio();
-    if (radio_ != nullptr) {
-        radio_->Initialize();
-    }
+    // Initialize media components and register their MCP tools
+    InitMusic();
+    InitRadio();
 
 #ifdef CONFIG_SD_CARD_ENABLE
     auto sd_card = board.GetSdCard();
     if (sd_card != nullptr) {
         if (sd_card->Initialize() == ESP_OK) {
             ESP_LOGI(TAG, "SD card mounted successfully");
-            sd_music_ = new Esp32SdMusic();
-            sd_music_->Initialize(sd_card);
-            sd_music_->loadTrackList();
+            InitSdMusic();
+            InitVideo();
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
@@ -686,9 +686,7 @@ void Application::MainEventLoop() {
             }
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
             if (device_state_ == kDeviceStateIdle) {
-                if ((music_ && music_->IsPlaying()) ||
-                    (radio_ && radio_->IsPlaying()) ||
-                    (sd_music_ && sd_music_->IsPlaying()))
+                if (IsMediaPlaying())
                 {
                     // When music/radio is playing, hide the idle screen
                     display->HideIdleCard();
@@ -768,6 +766,7 @@ void Application::SetListeningMode(ListeningMode mode) {
 
 void Application::SetDeviceState(DeviceState state) {
     if (device_state_ == state) {
+        ESP_LOGI(TAG, "Device state already in %s, no need to change", STATE_STRINGS[state]);
         return;
     }
     
@@ -795,25 +794,10 @@ void Application::SetDeviceState(DeviceState state) {
 
     auto led = board.GetLed();
     led->OnStateChanged();
-    // Stop music playback when transitioning from idle state to any other state
+    // Stop all active media and clear display overlays when leaving idle state
     if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
-        if (music_) {
-            ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s", 
-                    STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-            music_->StopStreaming();
-        }
-        if (radio_) {
-            ESP_LOGI(TAG, "Stopping radio streaming due to state change: %s -> %s", 
-                    STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-            radio_->Stop();
-        }
-		if (sd_music_) {
-			ESP_LOGI(TAG, "Stopping SD music due to state change: %s -> %s",
-					 STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-			sd_music_->stop();
-		}
-
-        display->ClearQRCode();
+        StopOtherMedia();
+        qrcode::QRCodeDisplay::GetInstance().Clear();
     }																	   
     switch (state) {
         case kDeviceStateUnknown:
@@ -1096,6 +1080,7 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
             
             // Ensure audio output is enabled
             if (!codec->output_enabled()) {
+                ESP_LOGW(TAG, "%s Enabling audio output for music playback", __func__);
                 codec->EnableOutput(true);
             }
             
@@ -1109,6 +1094,576 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
 
 void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
+}
+
+/* ==================================================================
+ * Media Player API Implementations
+ * ================================================================== */
+
+bool Application::PlayMusic(const std::string& song_name, const std::string& artist_name) {
+    if (!music_) {
+        ESP_LOGW(TAG, "Music module not available");
+        return false;
+    }
+
+    // Stop other media before playing music
+    StopOtherMedia(MediaComponent::kMusic);
+
+    // Ensure device is idle before starting playback
+    EnsureIdleForMedia();
+
+    ESP_LOGI(TAG, "PlayMusic: song='%s' artist='%s'", song_name.c_str(), artist_name.c_str());
+    if (!music_->Download(song_name, artist_name)) {
+        ESP_LOGE(TAG, "PlayMusic: failed to get music resource");
+        return false;
+    }
+    auto result = music_->GetDownloadResult();
+    ESP_LOGI(TAG, "PlayMusic: result=%s", result.c_str());
+    return true;
+}
+
+bool Application::PlayRadio(const std::string& station_name) {
+    if (!radio_) {
+        ESP_LOGW(TAG, "Radio module not available");
+        return false;
+    }
+
+    // Stop other media before playing radio
+    StopOtherMedia(MediaComponent::kRadio);
+
+    // Ensure device is idle before starting playback
+    EnsureIdleForMedia();
+
+    ESP_LOGI(TAG, "PlayRadio: station='%s'", station_name.c_str());
+    return radio_->PlayStation(station_name);
+}
+
+bool Application::PlayRadioUrl(const std::string& url, const std::string& station_name) {
+    if (!radio_) {
+        ESP_LOGW(TAG, "Radio module not available");
+        return false;
+    }
+
+    // Stop other media before playing radio URL
+    StopOtherMedia(MediaComponent::kRadio);
+
+    // Ensure device is idle before starting playback
+    EnsureIdleForMedia();
+
+    ESP_LOGI(TAG, "PlayRadioUrl: url='%s' name='%s'", url.c_str(), station_name.c_str());
+    return radio_->PlayUrl(url, station_name);
+}
+
+bool Application::PlaySdMedia(const std::string& keyword, bool is_video) {
+#ifdef CONFIG_SD_CARD_ENABLE
+    if (is_video) {
+        if (!sd_video_) {
+            ESP_LOGW(TAG, "PlaySdMedia: video player not initialized");
+            return false;
+        }
+        auto state = sd_video_->GetState();
+        if (state == VideoPlayerState::Idle || state == VideoPlayerState::Stopping) {
+            size_t found = sd_video_->ScanDirectory();
+            if (found == 0) {
+                ESP_LOGW(TAG, "PlaySdMedia: no AVI files found");
+                return false;
+            }
+            for (const auto& entry : sd_video_->GetPlaylist()) {
+                if (entry.path.find(keyword) != std::string::npos) {
+                    return PlayVideo(entry.path);
+                }
+            }
+            ESP_LOGW(TAG, "PlaySdMedia: no AVI matching '%s'", keyword.c_str());
+            return false;
+        }
+        return false;
+    }
+
+    // Audio from SD card
+    if (!sd_music_) {
+        ESP_LOGW(TAG, "SD music module not available");
+        return false;
+    }
+
+    // Stop other media before playing SD music
+    StopOtherMedia(MediaComponent::kSdMusic);
+
+    // Ensure device is idle before starting playback
+    EnsureIdleForMedia();
+
+    ESP_LOGI(TAG, "PlaySdMedia: keyword='%s'", keyword.c_str());
+    if (sd_music_->GetTotalTracks() == 0) {
+        sd_music_->LoadPlaylist();
+    }
+    return sd_music_->PlayByName(keyword);
+#else
+    ESP_LOGW(TAG, "SD card support not enabled");
+    return false;
+#endif
+}
+
+bool Application::PlayVideo(const std::string& file_path) {
+#ifdef CONFIG_SD_CARD_ENABLE
+    if (!sd_video_) {
+        ESP_LOGE(TAG, "PlayVideo: video player not initialized");
+        return false;
+    }
+    if (sd_video_->GetState() == VideoPlayerState::Error) {
+        ESP_LOGE(TAG, "PlayVideo: VideoPlayer in error state");
+        return false;
+    }
+
+    // Stop other media before playing video
+    StopOtherMedia(MediaComponent::kVideo);
+
+    // Ensure device is idle before starting playback
+    EnsureIdleForMedia();
+
+    ESP_LOGI(TAG, "PlayVideo: path='%s'", file_path.c_str());
+    sd_video_->Play(file_path);
+    return true;
+#else
+    ESP_LOGW(TAG, "SD card support not enabled");
+    return false;
+#endif
+}
+
+void Application::StopAllMedia() {
+    ESP_LOGI(TAG, "StopAllMedia");
+    StopOtherMedia();
+}
+
+bool Application::IsMediaPlaying() const {
+    if (music_ && music_->IsPlaying()) return true;
+    if (radio_ && radio_->IsPlaying()) return true;
+    if (sd_music_ && sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) return true;
+#ifdef CONFIG_SD_CARD_ENABLE
+    if (sd_video_ && sd_video_->GetState() == VideoPlayerState::Playing) return true;
+#endif
+    return false;
+}
+
+/* ------------------------------------------------------------------
+ * EnsureIdleForMedia — transition device to idle before media playback
+ *
+ * Keeps media components fully decoupled from Application state
+ * management. Media players can call this function to ensure the 
+ * device is in the correct state for playback without needing to know 
+ * the details of the state machine.
+ * ------------------------------------------------------------------ */
+bool Application::EnsureIdleForMedia() {
+    DeviceState ds = device_state_;
+
+    // Already idle or in a non-interactive state — good to go
+    if (ds == kDeviceStateIdle || ds == kDeviceStateUnknown) {
+        return true;
+    }
+
+    // Only transition from Listening / Speaking to Idle
+    if (ds != kDeviceStateListening && ds != kDeviceStateSpeaking) {
+        ESP_LOGW(TAG, "EnsureIdleForMedia: unexpected state %s, forcing idle",
+                 STATE_STRINGS[ds]);
+        SetDeviceState(kDeviceStateIdle);
+        return true;
+    }
+
+    // Toggle chat to end the conversation and return to idle
+    constexpr int kMaxRetries = 10;
+    constexpr int kRetryDelayMs = 200;
+    for (int i = 0; i < kMaxRetries; ++i) {
+        ToggleChatState();
+        vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+        ds = device_state_;
+        if (ds == kDeviceStateIdle) {
+            ESP_LOGI(TAG, "EnsureIdleForMedia: entered idle after %d toggle(s)", i + 1);
+            return true;
+        }
+    }
+
+    ESP_LOGW(TAG, "EnsureIdleForMedia: timeout — forcing idle");
+    SetDeviceState(kDeviceStateIdle);
+    return true;
+}
+
+/* ------------------------------------------------------------------
+ * StopOtherMedia — centralized media teardown
+ * ------------------------------------------------------------------ */
+void Application::StopOtherMedia(MediaComponent except) {
+    if (except != MediaComponent::kMusic && music_ && music_->IsPlaying()) {
+        ESP_LOGI(TAG, "StopOtherMedia: stopping music");
+        music_->StopStreaming();
+    }
+    if (except != MediaComponent::kRadio && radio_ && radio_->IsPlaying()) {
+        ESP_LOGI(TAG, "StopOtherMedia: stopping radio");
+        radio_->Stop();
+    }
+#ifdef CONFIG_SD_CARD_ENABLE
+    if (except != MediaComponent::kSdMusic && sd_music_ &&
+        sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) {
+        ESP_LOGI(TAG, "StopOtherMedia: stopping SD music");
+        sd_music_->Stop();
+    }
+    if (except != MediaComponent::kVideo && sd_video_) {
+        auto state = sd_video_->GetState();
+        if (state == VideoPlayerState::Playing || state == VideoPlayerState::Paused) {
+            ESP_LOGI(TAG, "StopOtherMedia: stopping video");
+            sd_video_->Stop();
+        }
+    }
+#endif
+}
+
+void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
+    if (!player) return;
+
+    // Forward FFT PCM data to the MusicVisualizer or OLED SpectrumManager
+    player->SetFftCallback([this](int16_t* pcm_data, size_t pcm_bytes) {
+        if (music_visualizer_ && music_visualizer_->IsRunning()) {
+            music_visualizer_->FeedAudioData(pcm_data, pcm_bytes);
+        }
+        if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
+            oled_spectrum_mgr_->FeedAudioData(pcm_data, pcm_bytes);
+        }
+    });
+
+    player->SetPcmCallback([this](int16_t* pcm_data, int total_samples, int channels, int sample_rate) {
+        audio_service_.UpdateOutputTimestamp();
+    });
+
+    // Manage MusicVisualizer / OLED spectrum lifecycle via player state transitions
+    player->SetStateCallback([this](AudioPlayerState old_state, AudioPlayerState new_state) {
+        auto display = Board::GetInstance().GetDisplay();
+        auto* disp = lv_display_get_default();
+        auto cf = lv_display_get_color_format(disp);
+
+        if (new_state == AudioPlayerState::Playing) {
+            EnsureIdleForMedia();
+
+            if (cf != LV_COLOR_FORMAT_I1) {
+                Display* lcd  = display;
+                // ── LCD path: full MusicVisualizer (spectrum + music UI overlay) ──
+                if (!music_visualizer_) {
+                    music_visualizer_ = std::make_unique<music::MusicVisualizer>();
+                }
+                auto* viz = music_visualizer_.get();
+
+                // Wire callbacks (safe to call multiple times)
+                viz->SetOverlayCallback([lcd](bool active) {
+                    lcd->SetMediaOverlayActive(active);
+                });
+                viz->SetInfoProvider([this]() -> music::MusicInfo {
+                    return BuildMusicInfo();
+                });
+                viz->SetFontProvider([lcd](const lv_font_t** text_font, const lv_font_t** icon_font) {
+                    auto* theme = static_cast<LvglTheme*>(lcd->GetTheme());
+                    if (theme) {
+                        *text_font = theme->text_font()->font();
+                        *icon_font = theme->large_icon_font()->font();
+                    }
+                });
+
+                // Compute status bar height for canvas positioning
+                int status_h = 0;
+                if (lvgl_port_lock(1000)) {
+                    lv_obj_t* container = lv_obj_get_child(lv_screen_active(), 0);
+                    lv_obj_t* sb = container ? lv_obj_get_child(container, 0) : nullptr;
+                    if (sb) status_h = lv_obj_get_height(sb);
+                    lvgl_port_unlock();
+                }
+
+                music::VisualizerConfig cfg;
+                cfg.canvas_x      = 0;
+                cfg.canvas_y      = status_h;
+                cfg.canvas_width  = lcd->width();
+                cfg.canvas_height = lcd->height() - status_h;
+                cfg.lcd_height = lcd->height();
+                cfg.lcd_width = lcd->width();
+                cfg.status_bar_h = status_h;
+                cfg.audio_buf_size = AUDIO_PCM_OUT_BUF_SIZE;
+
+                // Provide initial info snapshot so first UI frame is populated
+                viz->Start(cfg, BuildMusicInfo());
+                ESP_LOGI(TAG, "MusicVisualizer started for LCD display with status bar height %d", status_h);
+            } else {
+                Display* oled  = display;
+                // ── OLED path: lightweight monochrome spectrum (no music UI) ──
+                if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
+                    return;  // already running
+                }
+
+                // Compute status bar height
+                int status_h = 16;  // OLED default
+                if (lvgl_port_lock(1000)) {
+                    lv_obj_t* container = lv_obj_get_child(lv_screen_active(), 0);
+                    lv_obj_t* sb = container ? lv_obj_get_child(container, 0) : nullptr;
+                    if (sb) status_h = lv_obj_get_height(sb);
+                    lvgl_port_unlock();
+                }
+
+                spectrum::SpectrumConfig scfg;
+                scfg.monochrome     = true;
+                scfg.fft_size       = 256;
+                scfg.bar_count      = 16;
+                scfg.canvas_x       = 0;
+                scfg.canvas_y       = status_h;
+                scfg.canvas_width   = oled->width();                  // 128
+                scfg.canvas_height  = oled->height() - status_h;     // 48 or 16
+                scfg.lcd_width      = oled->width();
+                scfg.lcd_height     = oled->height();
+                scfg.status_bar_h   = status_h;
+                scfg.bar_max_height = scfg.canvas_height;
+                scfg.task_stack_size = 3 * 1024;
+                scfg.task_priority   = 1;
+                scfg.task_core       = 0;
+
+                oled_spectrum_mgr_ = std::make_unique<spectrum::SpectrumManager>(scfg);
+                oled_spectrum_mgr_->AllocateAudioBuffer(AUDIO_PCM_OUT_BUF_SIZE);
+                oled_spectrum_mgr_->Start();
+                oled->SetMediaOverlayActive(true);
+                ESP_LOGI(TAG, "OLED SpectrumManager started with status bar height %d", status_h);
+            }
+        } else if (old_state == AudioPlayerState::Playing &&
+                   (new_state == AudioPlayerState::Idle ||
+                    new_state == AudioPlayerState::Stopping)) {
+            if (music_visualizer_) {
+                music_visualizer_->Stop();
+            }
+            if (oled_spectrum_mgr_) {
+                oled_spectrum_mgr_->Stop();
+                display->SetMediaOverlayActive(false);
+            }
+        }
+    });
+
+    ESP_LOGI(TAG, "SetupAudioPlayerCallback: MusicVisualizer callbacks installed");
+}
+
+/**
+ * @brief Build a MusicInfo snapshot by auto-detecting the active player.
+ *
+ * Checks sd_music_, music_, and radio_ in priority order.
+ * Returns a data-only struct — the MusicVisualizer never touches
+ * any concrete player object.
+ */
+music::MusicInfo Application::BuildMusicInfo() {
+    music::MusicInfo info;
+
+    // 1. SD Card player (highest priority — has richest metadata)
+    if (sd_music_ && sd_music_->IsPlaying()) {
+        info.source       = music::SourceType::SD_CARD;
+        info.is_playing   = true;
+        info.title        = sd_music_->GetCurrentTrack();
+        info.position_ms  = sd_music_->GetCurrentPositionMs();
+        info.duration_ms  = sd_music_->GetDurationMs();
+        info.bitrate_kbps = sd_music_->GetBitrate();
+        if (info.bitrate_kbps > 1000) info.bitrate_kbps /= 1000;
+
+        char sub[64];
+        snprintf(sub, sizeof(sub), "%d kbps  •  %s",
+                 info.bitrate_kbps, sd_music_->GetDurationString().c_str());
+        info.sub_info = sub;
+
+        // Find next track
+        auto tracks = sd_music_->GetPlaylist();
+        std::string cur_path = sd_music_->GetCurrentTrackPath();
+        int idx = -1;
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            if (tracks[i].path == cur_path) { idx = static_cast<int>(i); break; }
+        }
+        if (idx >= 0 && idx < static_cast<int>(tracks.size()) - 1) {
+            info.next_track = tracks[idx + 1].name;
+        } else if (!tracks.empty()) {
+            info.next_track = tracks[0].name;
+        }
+
+        // ESP_LOGI(TAG, "BuildMusicInfo: SD card track='%s' pos=%lldms dur=%lldms bitrate=%dkbps next='%s'",
+        //          info.title.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps, info.next_track.c_str());
+
+        return info;
+    }
+
+    // 2. Online music player
+    if (music_ && music_->IsPlaying()) {
+        info.source       = music::SourceType::ONLINE;
+        info.is_playing   = true;
+        info.title        = music_->GetTitle();
+        info.position_ms  = music_->GetPositionMs();
+        info.duration_ms  = music_->GetDurationMs();
+        info.bitrate_kbps = music_->GetBitrateKbps();
+
+        std::string artist = music_->GetArtist();
+        if (!artist.empty()) {
+            if (info.bitrate_kbps > 0) {
+                char sub[96];
+                snprintf(sub, sizeof(sub), "%s  •  %d kbps", artist.c_str(), info.bitrate_kbps);
+                info.sub_info = sub;
+            } else {
+                info.sub_info = artist;
+            }
+        } else if (info.bitrate_kbps > 0) {
+            info.sub_info = std::to_string(info.bitrate_kbps) + " kbps";
+        } else {
+            info.sub_info = "Streaming...";
+        }
+
+        // ESP_LOGI(TAG, "BuildMusicInfo: Online track='%s' artist='%s' pos=%lldms dur=%lldms bitrate=%dkbps",
+        //          info.title.c_str(), artist.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps);
+        return info;
+    }
+
+    // 3. Internet radio
+    if (radio_ && radio_->IsPlaying()) {
+        info.source     = music::SourceType::RADIO;
+        info.is_playing = true;
+        info.title      = radio_->GetCurrentStation();
+        info.sub_info   = "Live Broadcast";
+        if (info.title.empty()) info.title = "FM Radio";
+        return info;
+    }
+
+    return info;  // SourceType::NONE
+}
+
+/* ==================================================================
+ * Component Initializers
+ * ================================================================== */
+
+bool Application::InitMusic() {
+    music_ = new Esp32Music();
+    if (!music_) {
+        ESP_LOGE(TAG, "InitMusic: allocation failed");
+        return false;
+    }
+
+    auto codec = Board::GetInstance().GetAudioCodec();
+    music_->Initialize(codec);
+    SetupAudioPlayerCallback(music_);
+
+    McpFeatureTools::RegisterMusicTools(music_);
+    ESP_LOGI(TAG, "InitMusic: online music player ready");
+    return true;
+}
+
+bool Application::InitRadio() {
+    radio_ = new Esp32Radio();
+    if (!radio_) {
+        ESP_LOGE(TAG, "InitRadio: allocation failed");
+        return false;
+    }
+
+    auto codec = Board::GetInstance().GetAudioCodec();
+    radio_->Initialize(codec);
+    SetupAudioPlayerCallback(radio_);
+
+    McpFeatureTools::RegisterRadioTools(radio_);
+    ESP_LOGI(TAG, "InitRadio: internet radio player ready");
+    return true;
+}
+
+bool Application::InitSdMusic() {
+#ifdef CONFIG_SD_CARD_ENABLE
+    auto sd_card = Board::GetInstance().GetSdCard();
+    if (!sd_card) {
+        ESP_LOGW(TAG, "InitSdMusic: no SD card available");
+        return false;
+    }
+
+    sd_music_ = new Esp32SdMusic();
+    if (!sd_music_) {
+        ESP_LOGE(TAG, "InitSdMusic: allocation failed");
+        return false;
+    }
+
+    auto codec = Board::GetInstance().GetAudioCodec();
+    sd_music_->Initialize(sd_card, codec);
+    sd_music_->LoadPlaylist();
+    SetupAudioPlayerCallback(sd_music_);
+
+    McpFeatureTools::RegisterSdMusicTools(sd_music_);
+    ESP_LOGI(TAG, "InitSdMusic: SD card music player ready");
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool Application::InitVideo() {
+#ifdef CONFIG_SD_CARD_ENABLE
+    auto& board = Board::GetInstance();
+    auto sd_card = board.GetSdCard();
+    if (!sd_card) {
+        ESP_LOGW(TAG, "InitVideo: no SD card available");
+        return false;
+    }
+    auto display = board.GetDisplay();
+    auto codec = board.GetAudioCodec();
+    // --- Get the raw LCD panel handle (bypasses LVGL for max FPS) ---
+    auto* lcd = dynamic_cast<LcdDisplay*>(display);
+    if (lcd != nullptr) {
+        sd_video_ = &VideoPlayer::GetInstance();
+        // Initialize: pass LCD panel handle, resolution, codec, SD card
+        bool ok = sd_video_->Initialize(
+            lcd->GetPanelHandle(),
+            static_cast<uint16_t>(lcd->width()),
+            static_cast<uint16_t>(lcd->height()),
+            codec,
+            sd_card,
+            display,   // Pass Display* for LVGL canvas support
+            // Choose render mode for testing:
+            //   VideoRenderMode::DirectLcd  — bypass LVGL, max FPS (default not stable)
+            //   VideoRenderMode::LvglCanvas — through LVGL canvas pipeline
+            VideoRenderMode::LvglCanvas
+        );
+
+        if (ok) {
+            // Scan /sdcard/videos/ for .avi files and build playlist
+            size_t found = sd_video_->ScanDirectory();
+            ESP_LOGI(TAG, "InitVideo: found %d video files on SD card", found);
+
+            // Manage main application UI lifecycle during video playback.
+            // Hide emoji/chat/idle card when video starts playing, restore
+            // when stopped — mirrors SetupAudioPlayerCallback() pattern for audio.
+            sd_video_->SetStateCallback([](VideoPlayerState old_state,
+                                        VideoPlayerState new_state) {
+                auto display = Board::GetInstance().GetDisplay();
+                if (!display) return;
+
+                if (new_state == VideoPlayerState::Playing) {
+                    // Activate media overlay to hide main UI (emoji/chat/idle card)
+                    display->SetMediaOverlayActive(true);
+                    ESP_LOGI(TAG, "Video playing: main UI hidden via media overlay");
+                } else if (old_state == VideoPlayerState::Playing &&
+                        (new_state == VideoPlayerState::Idle ||
+                            new_state == VideoPlayerState::Stopping)) {
+                    display->SetMediaOverlayActive(false);
+                    ESP_LOGI(TAG, "Video stopped: main UI restored via media overlay");
+                }
+            });
+
+            sd_video_->SetClockSyncCallback([](uint32_t rate, uint8_t bits, uint8_t channels) {
+                // This callback is called in the video decoding thread right before starting playback, so we need to be careful about performance.
+                // so it's a good place to ensure the device is idle and ready for media without blocking the main thread.
+                // When playback starts, ensure device is idle and ready for media
+                ESP_LOGI(TAG, "Video clock sync callback: ensuring idle for media");
+                Application::GetInstance().EnsureIdleForMedia();
+            });
+
+            sd_video_->SetAudioCallback([this](int16_t* pcm, size_t samples, int channels) {
+                // This callback is called in the video decoding thread, so we need to be careful about performance.
+                // We can use this callback to update the output timestamp for synchronization purposes.
+                audio_service_.UpdateOutputTimestamp();
+            });
+        }
+
+        McpFeatureTools::RegisterSdVideoTools(sd_video_);
+        ESP_LOGI(TAG, "InitVideo: video player ready");
+    } else {
+        ESP_LOGW(TAG, "InitVideo: display is not LCD, video player not initialized");
+    }
+    return true;
+#else
+    return false;
+#endif
 }
 
 // --- [DienBien Mod]- WEATHER SCREEN UPDATE----

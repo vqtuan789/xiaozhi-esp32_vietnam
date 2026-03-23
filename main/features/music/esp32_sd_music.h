@@ -1,24 +1,32 @@
-#ifndef ESP32_SD_MUSIC_H
+﻿#ifndef ESP32_SD_MUSIC_H
 #define ESP32_SD_MUSIC_H
+
+/**
+ * @file esp32_sd_music.h
+ * @brief SD card music player -- inherits AudioStreamPlayer.
+ *
+ * Responsibilities:
+ *   - Playlist management (playlist.json, scanning, genres, suggestions)
+ *   - Track metadata (ID3v1 / ID3v2)
+ *   - File-based audio streaming via AudioStreamPlayer base class
+ *   - Pause / resume / shuffle / repeat
+ *   - WAV / MP3 / AAC / FLAC playback from SD card
+ */
 
 #include <string>
 #include <vector>
-#include <thread>
 #include <atomic>
 #include <mutex>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
-extern "C" {
-#include "mp3dec.h"
-}
+#include "audio_stream_player.h"
 
-class Esp32SdMusic {
+class Esp32SdMusic : public AudioStreamPlayer {
 public:
     // ============================================================
-    // 1) ENUM — State Machine
+    // 1) ENUM -- State Machine
     // ============================================================
     enum class PlayerState {
         Stopped = 0,
@@ -29,7 +37,7 @@ public:
     };
 
     // ============================================================
-    // 2) ENUM — Repeat modes
+    // 2) ENUM -- Repeat modes
     // ============================================================
     enum class RepeatMode {
         None = 0,
@@ -38,17 +46,12 @@ public:
     };
 
     // ============================================================
-    // 3) Struct TrackInfo — dữ liệu một bài (đã tối giản ID3)
-    //  - Chỉ còn ID3v1 (title/artist/album/genre/comment/year/track)
-    //  - KHÔNG còn mtime, cover_offset, ID3v2 text
-    //  - Duration/bitrate tính từ MP3 frame + file_size
+    // 3) Struct TrackInfo
     // ============================================================
     struct TrackInfo {
-        // Hiển thị
-        std::string name;   // Tên hiển thị (ưu tiên ID3v1 title, fallback tên file)
-        std::string path;   // Đường dẫn tuyệt đối
+        std::string name;
+        std::string path;
 
-        // Metadata cơ bản (từ ID3v1 — rất nhẹ)
         std::string title;
         std::string artist;
         std::string album;
@@ -57,18 +60,16 @@ public:
         std::string year;
         int         track_number = 0;
 
-        // Audio info (cập nhật khi decode)
-        int   duration_ms  = 0;
-        int   bitrate_kbps = 0;
-        size_t file_size   = 0;  // dùng cho info/debug, không cache theo mtime
+        int    duration_ms  = 0;
+        int    bitrate_kbps = 0;
+        size_t file_size    = 0;
 
-        // Cover art (không parse nữa nhưng giữ field để không phá tool MCP)
-        uint32_t    cover_size = 0;   // luôn 0 vì không parse APIC
-        std::string cover_mime;       // luôn rỗng
+        uint32_t    cover_size = 0;
+        std::string cover_mime;
     };
 
     // ============================================================
-    // 4) Struct Progress — dành cho UI
+    // 4) Struct Progress
     // ============================================================
     struct TrackProgress {
         int64_t position_ms = 0;
@@ -82,167 +83,209 @@ public:
     Esp32SdMusic();
     ~Esp32SdMusic();
 
-    void Initialize(class SdCard* sd_card);
+    void Initialize(class SdCard* sd_card, AudioCodec *codec);
 
     // ============================================================
-    // 6) Playlist API cơ bản
+    // 6) Playlist / Directory API
     // ============================================================
-    // Đọc playlist từ playlist.json, nếu không có/hỏng sẽ quét SD và ghi lại
-    bool loadTrackList();
-    size_t getTotalTracks() const;
-    std::vector<TrackInfo> listTracks() const;
 
-    // Chọn thư mục gốc phát nhạc (sẽ dùng playlist.json trong thư mục đó)
-    bool setDirectory(const std::string& relative_dir);
-    bool playDirectory(const std::string& relative_dir);
+    /** Load (or rebuild) playlist from playlist.json on SD card */
+    bool LoadPlaylist();
 
-    // Phát theo tên / keyword
-    bool playByName(const std::string& keyword);
-    TrackInfo getTrackInfo(int index) const;
-    bool setTrack(int index);
+    /** Get total number of tracks in current playlist */
+    size_t GetTotalTracks() const;
 
-    std::string getCurrentTrack() const;
-    std::string getCurrentTrackPath() const;
+    /** Get a copy of the full playlist */
+    std::vector<TrackInfo> GetPlaylist() const;
 
-    std::vector<std::string> listDirectories() const;
-    std::vector<TrackInfo> searchTracks(const std::string& keyword) const;
+    /** Get paginated playlist (0-based page_index) */
+    std::vector<TrackInfo> GetPlaylistPage(size_t page_index,
+                                           size_t page_size = 10) const;
 
-    std::string resolveLongName(const std::string& path);
-    std::string resolveCaseInsensitiveDir(const std::string& path);
+    /** Get track info by index */
+    TrackInfo GetTrackInfo(int index) const;
 
-    // Đếm số bài trong 1 thư mục (dùng playlist hiện tại, không quét lại SD)
-    size_t countTracksInDirectory(const std::string& relative_dir);
-    size_t countTracksInCurrentDirectory() const;
+    /** Get current playlist index (-1 if none) */
+    int GetCurrentIndex() const;
 
-    std::vector<TrackInfo> listTracksPage(size_t page_index,
-                                          size_t page_size = 10) const;
+    /** Set working directory (relative to SD mount point) and reload playlist */
+    bool SetDirectory(const std::string& relative_dir);
 
-    // Quét lại toàn bộ SD (từ root_directory_) và ghi đè playlist.json + RAM
-    bool rebuildPlaylistFromSd();
+    /** Get sub-directories under current root */
+    std::vector<std::string> GetDirectories() const;
 
-    // ============================================================
-    // 7) Playback API
-    // ============================================================
-    bool play();
-    void pause();
-    void stop();
+    /** Search tracks by keyword (name or path) */
+    std::vector<TrackInfo> SearchTracks(const std::string& keyword) const;
 
-    bool next();
-    bool prev();
-    bool IsPlaying() const;
+    /** Get track count in a specific directory */
+    size_t GetTrackCountInDir(const std::string& relative_dir);
+
+    /** Get track count in current directory */
+    size_t GetTrackCount() const;
+
+    /** Force rescan SD card and rebuild playlist.json */
+    bool RebuildPlaylist();
 
     // ============================================================
-    // 8) Playback Settings
+    // 7) Playback control API
     // ============================================================
-    void shuffle(bool enabled);
-    void repeat(RepeatMode mode);
+
+    /**
+     * @brief Play current track (resume if paused).
+     * @return true if playback started successfully
+     */
+    bool Play();
+
+    /**
+     * @brief Play a specific file by full path.
+     * @param file_path  Absolute path, e.g. "/sdcard/Music/song.mp3"
+     * @return true if playback started successfully
+     */
+    bool Play(const std::string& file_path);
+
+    /**
+     * @brief Play a track matched by keyword (name or path substring).
+     * @param keyword  Search keyword
+     * @return true if a matching track was found and playback started
+     */
+    bool PlayByName(const std::string& keyword);
+
+    /**
+     * @brief Play all tracks in a directory.
+     * @param relative_dir  Directory relative to SD mount point
+     * @return true if directory has tracks and playback started
+     */
+    bool PlayDirectory(const std::string& relative_dir);
+
+    /** Stop current playback */
+    void Stop();
+
+    /** Pause current playback */
+    void Pause();
+
+    /** Play next track in playlist */
+    bool Next();
+
+    /** Play previous track in playlist */
+    bool Prev();
+
+    /** Jump to a specific track by index and start playing */
+    bool SetTrack(int index);
+
+    bool IsPlaying() const override;
 
     // ============================================================
-    // 9) Query state / FFT
+    // 8) Playback settings
     // ============================================================
-    PlayerState getState() const;
-    TrackProgress updateProgress() const;
-    int16_t* getFFTData() const;
 
-    int64_t getDurationMs() const;
-    int64_t getCurrentPositionMs() const;
-    int getBitrate() const;
-    std::string getDurationString() const;
-    std::string getCurrentTimeString() const;
+    void SetShuffleMode(bool enabled);
+    void SetRepeatMode(RepeatMode mode);
 
     // ============================================================
-    // 10) Gợi ý bài hát
+    // 9) State queries
     // ============================================================
-    std::vector<TrackInfo> suggestNextTracks(size_t max_results = 5);
-    std::vector<TrackInfo> suggestSimilarTo(const std::string& name_or_path,
+
+    PlayerState GetState() const;
+    TrackProgress GetProgress() const;
+
+    int64_t GetDurationMs() const;
+    int64_t GetCurrentPositionMs() const;
+    int GetBitrate() const;
+    std::string GetDurationString() const;
+    std::string GetCurrentTimeString() const;
+
+    std::string GetCurrentTrack() const;
+    std::string GetCurrentTrackPath() const;
+
+    // ============================================================
+    // 10) Suggestions
+    // ============================================================
+
+    std::vector<TrackInfo> SuggestNextTracks(size_t max_results = 5);
+    std::vector<TrackInfo> SuggestSimilarTo(const std::string& name_or_path,
                                             size_t max_results = 5);
 
     // ============================================================
-    // 11) Playlist theo THỂ LOẠI (dựa trên ID3v1 genre index)
+    // 11) Genre playlists
     // ============================================================
-    bool buildGenrePlaylist(const std::string& genre);
-    bool playGenreIndex(int pos);
-    bool playNextGenre();
-    std::vector<std::string> listGenres() const;
+
+    bool BuildGenrePlaylist(const std::string& genre);
+    bool PlayGenreIndex(int pos);
+    bool PlayNextGenre();
+    std::vector<std::string> GetGenres() const;
+
+protected:
+    // ============================================================
+    // AudioStreamPlayer overrides
+    // ============================================================
+    void SourceDataLoop(const std::string& source) override;
+    void OnStreamInfoReady(int sample_rate, int bits_per_sample,
+                           int channels, int bitrate, int frame_size) override;
+    void OnPcmFrame(int64_t play_time_ms, int sample_rate,
+                    int channels) override;
+    bool OnPlaybackFinishedAndContinue() override;
+    void OnDisplayReady() override;
+    void OnPauseStateChanged(bool paused) override;
 
 private:
     // ============================================================
     // Playlist helpers
     // ============================================================
-    void scanDirectoryRecursive(const std::string& dir,
+    void ScanDirectoryRecursive(const std::string& dir,
                                 std::vector<TrackInfo>& out);
-
-    int findNextTrackIndex(int start, int direction);
-    bool resolveDirectoryRelative(const std::string& relative_dir,
+    int FindNextTrackIndex(int start, int direction);
+    bool ResolveDirectoryRelative(const std::string& relative_dir,
                                   std::string& out_full);
-    int findTrackIndexByKeyword(const std::string& keyword) const;
+    int FindTrackByKeyword(const std::string& keyword) const;
 
-    // Playlist file (playlist.json)
-    bool loadPlaylistFromFile(const std::string& playlist_path,
+    bool LoadPlaylistFromFile(const std::string& playlist_path,
                               std::vector<TrackInfo>& out) const;
-    bool savePlaylistToFile(const std::string& playlist_path,
+    bool SavePlaylistToFile(const std::string& playlist_path,
                             const std::vector<TrackInfo>& list) const;
 
-    // ============================================================
-    // Playback Thread
-    // ============================================================
-    void playbackThreadFunc();
-    bool decodeAndPlayFile(const TrackInfo& track);
-    void joinPlaybackThreadWithTimeout();
+    std::string ResolveLongName(const std::string& path);
+    std::string ResolveCaseInsensitiveDir(const std::string& path);
 
     // ============================================================
-    // MP3 Decoder Utilities
+    // Audio format detection
     // ============================================================
-    bool initializeMp3Decoder();
-    void cleanupMp3Decoder();
+    AudioDecoderType DetectFileFormat(const std::string& path) const;
+
+    // ID3 / WAV helpers
     size_t SkipId3Tag(uint8_t* data, size_t size);
-    void resetSampleRate();
 
     // ============================================================
-    // Lịch sử phát & gợi ý
+    // History / suggestions
     // ============================================================
-    void recordPlayHistory(int index);
+    void RecordPlayHistory(int index);
+    bool HandleNextTrack();
 
 private:
     SdCard* sd_card_;
-    // Playlist / thư mục
+
+    // Playlist
     std::string root_directory_;
     std::vector<TrackInfo> playlist_;
     mutable std::mutex playlist_mutex_;
     int current_index_ = -1;
     std::vector<uint32_t> play_count_;
 
-    // Playback state / thread
-    std::thread playback_thread_;
-    std::atomic<bool> stop_requested_;
-    std::atomic<bool> pause_requested_;
+    // State
     std::atomic<PlayerState> state_;
-
-    mutable std::mutex state_mutex_;
-    std::condition_variable state_cv_;
 
     // Playback options
     bool shuffle_enabled_;
     RepeatMode repeat_mode_;
 
     // Progress tracking
-    std::atomic<int64_t> current_play_time_ms_;
     std::atomic<int64_t> total_duration_ms_;
 
-    // FFT buffer (display owns memory)
-    int16_t* final_pcm_data_fft_;
-
-    // mini-mp3 decoder
-    void* mp3_decoder_;
-    bool mp3_decoder_initialized_;
-    MP3FrameInfo mp3_frame_info_{};
-
-    // Playlist theo thể loại
+    // Genre playlists
     std::vector<int> genre_playlist_;
     int genre_current_pos_ = -1;
     std::string genre_current_key_;
 
-    // History / gợi ý
+    // History / suggestions
     mutable std::mutex history_mutex_;
     std::vector<int> play_history_indices_;
 };
