@@ -20,6 +20,7 @@
 #include "codecs/es8311_audio_codec.h"
 #include "button.h"
 #include "display/lcd_display.h"
+#include "features/music/music_visualizer.h"
 #include "led/single_led.h"
 #include "assets/lang_config.h"
 #include "system_reset.h"
@@ -344,16 +345,16 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
       switch (gesture) {
         case TOUCH_GESTURE_SWIPE_RIGHT:
           {
-            Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+            music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
             ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-            if (source == Display::DisplaySourceType::SD_CARD) {
+            if (source == music::SourceType::SD_CARD) {
               ESP_LOGI(TAG, "Play Next track");
               auto& app = Application::GetInstance();
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
-                sd_music->stop();
-                sd_music->next();
+                sd_music->Stop();
                 vTaskDelay(pdMS_TO_TICKS(500));
+                sd_music->Next();
               }
             } else {
               auto& board = Board::GetInstance();
@@ -373,16 +374,16 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
           break;
         case TOUCH_GESTURE_SWIPE_LEFT:
           {
-            Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+            music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
             ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-            if (source == Display::DisplaySourceType::SD_CARD) {
+            if (source == music::SourceType::SD_CARD) {
               ESP_LOGI(TAG, "Play Previous track");
               auto& app = Application::GetInstance();
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
-                sd_music->stop();
-                sd_music->prev();
+                sd_music->Stop();
                 vTaskDelay(pdMS_TO_TICKS(500));
+                sd_music->Prev();
               }
               break;
             }
@@ -436,14 +437,16 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         case TOUCH_GESTURE_LONG_PRESS:
           ESP_LOGW(TAG, "Long Press at (%d, %d)", x, y);
           {
-            Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+            music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
             ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-            if (source == Display::DisplaySourceType::NONE) {
+            if (source == music::SourceType::NONE) {
               auto& app = Application::GetInstance();
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
                 ESP_LOGI(TAG, "Toggle Play/Pause");
-                sd_music->play();
+                sd_music->SetRepeatMode(Esp32SdMusic::RepeatMode::RepeatAll);
+                sd_music->SetShuffleMode(true);
+                sd_music->Play();
               }
             } else {
               GetAudioCodec()->SetOutputVolume(0);

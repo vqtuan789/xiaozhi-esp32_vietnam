@@ -8,9 +8,17 @@ set(SOURCES "audio/audio_codec.cc"
             "audio/codecs/es8388_audio_codec.cc"
             "audio/codecs/es8389_audio_codec.cc"
             "audio/codecs/dummy_audio_codec.cc"
+            "features/music/audio_stream_player.cc"
+            "features/music/lyric_manager.cc"
             "features/music/esp32_music.cc"
             "features/music/esp32_radio.cc"
             "features/music/esp32_sd_music.cc"
+            "features/spectrum/spectrum_analyzer.cc"
+            "features/spectrum/spectrum_renderer.cc"
+            "features/spectrum/spectrum_manager.cc"
+            "features/music/music_visualizer.cc"
+            "features/QRCode/qrcode_display.cc"
+            "features/video/video_player.cc"
             "audio/processors/audio_debugger.cc"
             "led/single_led.cc"
             "led/circular_strip.cc"
@@ -36,6 +44,7 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
             "mcp_server.cc"
+            "features/mcp_server_features.cc"
             "system_info.cc"
             "application.cc"
             "ota.cc"
@@ -48,7 +57,7 @@ set(SOURCES "audio/audio_codec.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "protocols" "features/music" "features/weather")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "protocols" "features/music" "features/video" "features/weather" "features/spectrum" "features/QRCode")
 
 # Add board common files
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
@@ -81,6 +90,11 @@ if(CONFIG_BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_ES3N28P_LCD_2_8)
     set(DEFAULT_EMOJI_COLLECTION twemoji_32)
 elseif(CONFIG_BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_DTD)
     set(BOARD_TYPE "xiaozhi-ai-iot-vietnam-dtd")
+    set(BUILTIN_TEXT_FONT font_puhui_basic_16_4)
+    set(BUILTIN_ICON_FONT font_awesome_16_4)
+    set(DEFAULT_EMOJI_COLLECTION twemoji_32)
+elseif(CONFIG_BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_NVT)
+    set(BOARD_TYPE "xiaozhi-ai-iot-vietnam-nvt")
     set(BUILTIN_TEXT_FONT font_puhui_basic_16_4)
     set(BUILTIN_ICON_FONT font_awesome_16_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_32)

@@ -75,11 +75,51 @@ void AudioService::Initialize(AudioCodec* codec) {
 
 void AudioService::Start() {
     service_stopped_ = false;
+    ESP_LOGI(TAG, "Starting audio service...");
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
 #if CONFIG_USE_AUDIO_PROCESSOR
+#if AUDIO_SERVICE_STATIC_TASK_CREATION == 1
+    constexpr size_t stack_audio_input_size = 1024 * 6;
+    if (audio_input_task_stack_ == nullptr) {
+        audio_input_task_stack_ = (StackType_t*)heap_caps_malloc(stack_audio_input_size, MALLOC_CAP_SPIRAM);
+        assert(audio_input_task_stack_ != nullptr);
+    }
+    if (audio_input_task_buffer_ == nullptr) {
+        audio_input_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        assert(audio_input_task_buffer_ != nullptr);
+    }
+    audio_input_task_handle_ = xTaskCreateStaticPinnedToCore([](void* arg) {
+        AudioService* audio_service = (AudioService*)arg;
+        audio_service->AudioInputTask();
+        vTaskDelete(NULL);
+    }, "audio_input", stack_audio_input_size, this, 8, audio_input_task_stack_, audio_input_task_buffer_, 0);
+    if (audio_input_task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create audio input task");
+        return;
+    }
+
+    constexpr size_t stack_audio_output_size = 1024 * 3;
+    if (audio_output_task_stack_ == nullptr) {
+        audio_output_task_stack_ = (StackType_t*)heap_caps_malloc(stack_audio_output_size, MALLOC_CAP_SPIRAM);
+        assert(audio_output_task_stack_ != nullptr);
+    }
+    if (audio_output_task_buffer_ == nullptr) {
+        audio_output_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        assert(audio_output_task_buffer_ != nullptr);
+    }
+    audio_output_task_handle_ = xTaskCreateStatic([](void* arg) {
+        AudioService* audio_service = (AudioService*)arg;
+        audio_service->AudioOutputTask();
+        vTaskDelete(NULL);
+    }, "audio_output", stack_audio_output_size, this, 4, audio_output_task_stack_, audio_output_task_buffer_);
+    if (audio_output_task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create audio output task");
+        return;
+    }
+#else
     /* Start the audio input task */
     xTaskCreatePinnedToCore([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
@@ -93,6 +133,7 @@ void AudioService::Start() {
         audio_service->AudioOutputTask();
         vTaskDelete(NULL);
     }, "audio_output", 1024 * 3, this, 4, &audio_output_task_handle_);
+#endif // AUDIO_SERVICE_STATIC_TASK_CREATION
 #else
     /* Start the audio input task */
     xTaskCreate([](void* arg) {
@@ -109,17 +150,36 @@ void AudioService::Start() {
     }, "audio_output", 1024 * 3, this, 4, &audio_output_task_handle_);
 #endif
 
+#if AUDIO_SERVICE_STATIC_TASK_CREATION == 1
+    constexpr size_t stack_opus_codec_size = 1024 * 25;
+    if (opus_codec_task_stack_ == nullptr) {
+        opus_codec_task_stack_ = (StackType_t*)heap_caps_malloc(stack_opus_codec_size, MALLOC_CAP_SPIRAM);
+        assert(opus_codec_task_stack_ != nullptr);
+    }
+    if (opus_codec_task_buffer_ == nullptr) {
+        opus_codec_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        assert(opus_codec_task_buffer_ != nullptr);
+    }
+    opus_codec_task_handle_ = xTaskCreateStatic([](void* arg) {
+        AudioService* audio_service = (AudioService*)arg;
+        audio_service->OpusCodecTask();
+        vTaskDelete(NULL);
+    }, "opus_codec", stack_opus_codec_size, this, 2, opus_codec_task_stack_, opus_codec_task_buffer_);
+
+#else
     /* Start the opus codec task */
     xTaskCreate([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->OpusCodecTask();
         vTaskDelete(NULL);
     }, "opus_codec", 1024 * 25, this, 2, &opus_codec_task_handle_);
+#endif
 }
 
 void AudioService::Stop() {
     esp_timer_stop(audio_power_timer_);
     service_stopped_ = true;
+    ESP_LOGI(TAG, "Stopping audio service, waiting for tasks to exit...");
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
         AS_EVENT_WAKE_WORD_RUNNING |
         AS_EVENT_AUDIO_PROCESSOR_RUNNING);
@@ -220,6 +280,10 @@ void AudioService::AudioInputTask() {
                     }
                     data = std::move(mono_data);
                 }
+                // Apply high pass filter if configured
+                if (high_pass_filter_ != nullptr) {
+                    high_pass_filter_->ProcessBuffer(data.data(), data.size());
+                }
                 PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue, std::move(data));
                 continue;
             }
@@ -272,6 +336,7 @@ void AudioService::AudioOutputTask() {
         if (!codec_->output_enabled()) {
             esp_timer_stop(audio_power_timer_);
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+            ESP_LOGW(TAG, "%s Enabling audio output for playback", __func__);
             codec_->EnableOutput(true);
         }
         codec_->OutputData(task->pcm);
@@ -475,7 +540,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 }
 
 void AudioService::EnableVoiceProcessing(bool enable) {
-    ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
+    ESP_LOGI(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!audio_processor_initialized_) {
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
@@ -524,6 +589,7 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     if (!codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+        ESP_LOGW(TAG, "%s Enabling audio output for sound playback", __func__);
         codec_->EnableOutput(true);
     }
 
@@ -642,9 +708,11 @@ void AudioService::CheckAndUpdateAudioPowerState() {
         codec_->EnableInput(false);
     }
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
+        ESP_LOGW(TAG, "%s Disabling audio output to save power", __func__);
         codec_->EnableOutput(false);
     }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
+        ESP_LOGW(TAG, "%s Stopping audio power timer", __func__);
         esp_timer_stop(audio_power_timer_);
     }
 }
